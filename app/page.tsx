@@ -1,10 +1,9 @@
 "use client"
 
 import { useState, useCallback, useEffect, useRef } from 'react'
-import { Upload, MapPin, ChevronLeft, ChevronRight, Camera, Check, AlertCircle } from 'lucide-react'
+import { Upload, MapPin, Camera, Check, AlertCircle, X } from 'lucide-react'
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Card, CardContent } from "@/components/ui/card"
 import {
   Dialog,
   DialogContent,
@@ -15,6 +14,8 @@ import {
 } from "@/components/ui/dialog"
 import { Badge } from "@/components/ui/badge"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
+import { useToast } from "@/hooks/use-toast"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { MeiliSearch } from 'meilisearch'
 import ExifReader from 'exifreader'
 import maplibregl from 'maplibre-gl'
@@ -25,17 +26,17 @@ interface UploadedPhoto {
   file: File;
   preview: string;
   location?: string;
-  visited: boolean;
   coordinates?: [number, number];
 }
 
 interface UserData {
   username: string;
   email?: string;
+  redditUsername?: string;
 }
 
 interface PandalInfo {
-  id: string;
+  uid: string;
   name: string;
   coordinates: [number, number];
   address?: string;
@@ -43,7 +44,7 @@ interface PandalInfo {
 
 const MEILISEARCH_ENDPOINT = 'https://search.pujo.club'
 const INDEX_UID = 'pujos'
-const API_TOKEN = process.env.NEXT_PUBLIC_MEILISEARCHKEY
+const API_TOKEN = 'b16fd7743e2b96f99406a7be3d53320e445fb579bbcbadeb41f84fc48836360f'
 
 const client = new MeiliSearch({
   host: MEILISEARCH_ENDPOINT,
@@ -52,85 +53,93 @@ const client = new MeiliSearch({
 
 const index = client.index(INDEX_UID)
 
+const imageTypes = [
+  { value: 'pandal', label: 'Pandal Image' },
+  { value: 'atmosphere', label: 'Atmosphere Image' },
+  { value: 'protima', label: 'Protima Image' },
+  { value: 'performance', label: 'Performance Image' },
+  { value: 'food', label: 'Food Image' },
+  { value: 'other', label: 'Other' },
+]
+
+const DEFAULT_CENTER: [number, number] = [88.3639, 22.5726] // Kolkata coordinates
+const DEFAULT_ZOOM = 12
+
 export default function PujoPictures() {
   const [dragActive, setDragActive] = useState(false)
-  const [uploadedPhotos, setUploadedPhotos] = useState<UploadedPhoto[]>([])
-  const [currentPhotoIndex, setCurrentPhotoIndex] = useState(0)
+  const [uploadedPhoto, setUploadedPhoto] = useState<UploadedPhoto | null>(null)
   const [userData, setUserData] = useState<UserData | null>(null)
   const [isUserDataModalOpen, setIsUserDataModalOpen] = useState(false)
   const [tempUsername, setTempUsername] = useState('')
   const [tempEmail, setTempEmail] = useState('')
+  const [tempRedditUsername, setTempRedditUsername] = useState('')
   const [locationSearch, setLocationSearch] = useState('')
   const [locationResults, setLocationResults] = useState<PandalInfo[]>([])
-  const [mapCenter, setMapCenter] = useState<[number, number]>([88.3639, 22.5726]) // Kolkata coordinates
+  const [mapCenter, setMapCenter] = useState<[number, number]>(DEFAULT_CENTER)
   const [isSubmitting, setIsSubmitting] = useState(false)
-  const [nearbyPandals, setNearbyPandals] = useState<PandalInfo[]>([])
-  const [isLocationAutofilled, setIsLocationAutofilled] = useState(false)
   const [selectedPandal, setSelectedPandal] = useState<PandalInfo | null>(null)
-  const [autofilledPandal, setAutofilledPandal] = useState<PandalInfo | null>(null)
-  const [title, setTitle] = useState('')
-  const mapContainerRef = useRef<HTMLDivElement>(null)
-  const mapRef = useRef<maplibregl.Map | null>(null)
-  const markersRef = useRef<{ [key: string]: maplibregl.Marker }>({})
-  const [mapZoom, setMapZoom] = useState(15)
-  const formRef = useRef<HTMLDivElement>(null)
+  const [mapZoom, setMapZoom] = useState(DEFAULT_ZOOM)
+  const [isSubmissionSuccessDialogOpen, setIsSubmissionSuccessDialogOpen] = useState(false)
+  const [submissionId, setSubmissionId] = useState<string | null>(null)
   const [isLocationConfirmDialogOpen, setIsLocationConfirmDialogOpen] = useState(false)
   const [pendingPandal, setPendingPandal] = useState<PandalInfo | null>(null)
+  const [imageType, setImageType] = useState('pandal')
+  const [showNewPandalBanner, setShowNewPandalBanner] = useState(false)
+  const [isNoLocationSelectedDialogOpen, setIsNoLocationSelectedDialogOpen] = useState(false)
+  const [autoFilledLocation, setAutoFilledLocation] = useState<PandalInfo | null>(null)  
+
+  const mapContainerRef = useRef<HTMLDivElement>(null)
+  const mapRef = useRef<maplibregl.Map | null>(null)
+  const markerRef = useRef<maplibregl.Marker | null>(null)
+  const locationInputRef = useRef<HTMLInputElement>(null)
+  const formRef = useRef<HTMLFormElement>(null)
+  const { toast } = useToast()
 
   useEffect(() => {
+    const storedUserData = localStorage.getItem('userData')
+    if (storedUserData) {
+      setUserData(JSON.parse(storedUserData))
+    }
+
     if (mapContainerRef.current && !mapRef.current) {
       mapRef.current = new maplibregl.Map({
         container: mapContainerRef.current,
         style: 'https://basemaps.cartocdn.com/gl/positron-gl-style/style.json',
         center: mapCenter,
-        zoom: mapZoom
+        zoom: mapZoom,
+        interactive: false
       })
 
       mapRef.current.on('load', () => {
         if (mapRef.current) {
           mapRef.current.resize()
-          loadNearbyPandals()
         }
       })
+    }
 
-      mapRef.current.on('moveend', loadNearbyPandals)
+    document.addEventListener('click', handleClickOutside)
+    return () => {
+      document.removeEventListener('click', handleClickOutside)
     }
   }, [mapCenter, mapZoom])
 
   useEffect(() => {
     if (mapRef.current) {
       mapRef.current.setCenter(mapCenter)
+      mapRef.current.setZoom(mapZoom)
+      updateMapMarker()
     }
-  }, [mapCenter])
+  }, [mapCenter, mapZoom])
 
-  const loadNearbyPandals = async () => {
+  const updateMapMarker = () => {
     if (mapRef.current) {
-      const bounds = mapRef.current.getBounds()
-      const [swLng, swLat, neLng, neLat] = [
-        bounds.getWest(),
-        bounds.getSouth(),
-        bounds.getEast(),
-        bounds.getNorth()
-      ]
-      try {
-        //@ts-ignore
-        const results = await index.search('', {
-          filter: `_geoBoundingBox([${swLat}, ${swLng}], [${neLat}, ${neLng}])`,
-          limit: 50,
-        })
-        //@ts-ignore
-        const pandals:{id: string, name: string, address: string, coordinates: [number, number]} = results.hits.map((hit: any) => ({
-          id: hit.id,
-          name: hit.name,
-          coordinates: [hit._geo.lat, hit._geo.lng],
-          address: hit.address,
-        }))
-        //@ts-ignore
-        setNearbyPandals(pandals)
-        //@ts-ignore
-        updateMapMarkers(pandals)
-      } catch (error) {
-        console.error('Error searching for nearby pandals:', error)
+      if (markerRef.current) {
+        markerRef.current.remove()
+      }
+      if (selectedPandal) {
+        markerRef.current = new maplibregl.Marker()
+          .setLngLat([selectedPandal.coordinates[1], selectedPandal.coordinates[0]])
+          .addTo(mapRef.current)
       }
     }
   }
@@ -150,55 +159,51 @@ export default function PujoPictures() {
     e.stopPropagation()
     setDragActive(false)
     if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      handleFiles(e.dataTransfer.files)
+      handleFile(e.dataTransfer.files[0])
     }
   }, [])
 
   const handleFileInput = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
-      handleFiles(e.target.files)
+      handleFile(e.target.files[0])
     }
   }, [])
 
-  const handleFiles = useCallback(async (files: FileList) => {
-    const newPhotos = await Promise.all(Array.from(files).map(async (file, index) => {
-      const { location, coordinates } = await getLocationFromExif(file)
-      return {
-        id: Date.now() + index,
-        file,
-        preview: URL.createObjectURL(file),
-        location,
-        coordinates,
-        visited: false,
-      }
-    }))
-    setUploadedPhotos(prev => [...prev, ...newPhotos])
-    if (newPhotos[0].coordinates) {
-      setMapCenter([newPhotos[0].coordinates[1], newPhotos[0].coordinates[0]])
-      setLocationSearch(newPhotos[0].location || '')
-      setIsLocationAutofilled(true)
-      findNearbyPandals(newPhotos[0].coordinates[0], newPhotos[0].coordinates[1])
+  const handleFile = useCallback(async (file: File) => {
+    const { location, coordinates } = await getLocationFromExif(file)
+    const newPhoto: UploadedPhoto = {
+      id: Date.now(),
+      file,
+      preview: URL.createObjectURL(file),
+      location: location?.name,
+      coordinates,
     }
-    
-    // Smooth scroll to the bottom on mobile
-    if (window.innerWidth <= 768) {
-      setTimeout(() => {
-        window.scrollTo({
-          top: document.body.scrollHeight,
-          behavior: 'smooth'
-        })
-      }, 100)
+    setUploadedPhoto(newPhoto)
+    setLocationSearch(location?.name || '')
+    //@ts-ignore
+    setAutoFilledLocation(location)
+    if (location) {
+      setSelectedPandal(location)
+      setMapCenter([location.coordinates[1], location.coordinates[0]])
+      setMapZoom(15)
+    } else if (coordinates) {
+      setMapCenter([coordinates[1], coordinates[0]])
+      setMapZoom(15)
     }
+    // Auto scroll to the form
+    setTimeout(() => {
+      formRef.current?.scrollIntoView({ behavior: 'smooth' })
+    }, 100)
   }, [])
 
-  const getLocationFromExif = async (file: File): Promise<{ location?: string; coordinates?: [number, number] }> => {
+  const getLocationFromExif = async (file: File): Promise<{ location?: PandalInfo; coordinates?: [number, number] }> => {
     try {
       const tags = await ExifReader.load(file)
       if (tags.GPSLatitude && tags.GPSLongitude) {
         const lat = tags.GPSLatitude.description as unknown as number
         const lng = tags.GPSLongitude.description as unknown as number
         const nearestPandal = await findNearestPandal(lat, lng)
-        return { location: nearestPandal?.name, coordinates: [lat, lng] }
+        return { location: nearestPandal, coordinates: [lat, lng] }
       }
     } catch (error) {
       console.error('Error reading EXIF data:', error)
@@ -214,16 +219,12 @@ export default function PujoPictures() {
       })
       if (results.hits.length > 0) {
         const hit = results.hits[0]
-        const pandal = {
-          id: hit.id,
+        return {
+          uid: hit.uid,
           name: hit.name,
           coordinates: [hit._geo.lat, hit._geo.lng],
           address: hit.address,
         }
-        //@ts-ignore
-        setAutofilledPandal(pandal)
-        //@ts-ignore
-        return pandal
       }
     } catch (error) {
       console.error('Error searching for nearest pandal:', error)
@@ -231,160 +232,94 @@ export default function PujoPictures() {
     return undefined
   }
 
-  const findNearbyPandals = async (lat: number, lon: number) => {
-    try {
-      const results = await index.search('', {
-        filter: `_geoRadius(${lat}, ${lon}, 500)`,
-        limit: 5,
-      })
-      const pandals = results.hits.map((hit: any) => ({
-        id: hit.id,
-        name: hit.name,
-        coordinates: [hit._geo.lat, hit._geo.lng],
-        address: hit.address,
-      }))
-      //@ts-ignore
-      setNearbyPandals(pandals)
-      //@ts-ignore
-      updateMapMarkers(pandals)
-    } catch (error) {
-      console.error('Error searching for nearby pandals:', error)
-    }
-  }
-
-  const updateMapMarkers = (pandals: PandalInfo[]) => {
-    if (mapRef.current) {
-      // Remove existing markers
-      Object.values(markersRef.current).forEach(marker => marker.remove())
-      markersRef.current = {}
-
-      // Add new markers
-      pandals.forEach(pandal => {
-        const el = document.createElement('div')
-        el.innerHTML = `<img src="https://emojicdn.elk.sh/%F0%9F%93%8D?style=${pandal.id === selectedPandal?.id ? 'apple' : 'google'}" alt="Marker" style="width: 24px; height: 24px;">`
-        el.style.cursor = 'pointer'
-
-        const marker = new maplibregl.Marker(el)
-          .setLngLat([pandal.coordinates[1], pandal.coordinates[0]])
-          .addTo(mapRef.current!)
-
-        marker.getElement().addEventListener('click', () => {
-          setPendingPandal(pandal)
-          setIsLocationConfirmDialogOpen(true)
-        })
-
-        markersRef.current[pandal.id] = marker
-      })
-    }
-  }
-
-  const nextPhoto = useCallback((e: React.MouseEvent) => {
-    e.preventDefault()
-    setCurrentPhotoIndex((prev) => {
-      const nextIndex = (prev + 1) % uploadedPhotos.length
-      setUploadedPhotos(photos => 
-        photos.map((photo, index) => 
-          index === nextIndex ? { ...photo, visited: true } : photo
-        )
-      )
-      if (uploadedPhotos[nextIndex].coordinates) {
-        setMapCenter([uploadedPhotos[nextIndex].coordinates[1], uploadedPhotos[nextIndex].coordinates[0]])
-        setLocationSearch(uploadedPhotos[nextIndex].location || '')
-        setIsLocationAutofilled(!!uploadedPhotos[nextIndex].location)
-        findNearbyPandals(uploadedPhotos[nextIndex].coordinates[0], uploadedPhotos[nextIndex].coordinates[1])
-      } else {
-        setLocationSearch('')
-        setIsLocationAutofilled(false)
-        setNearbyPandals([])
-      }
-      return nextIndex
-    })
-  }, [uploadedPhotos])
-
-  const prevPhoto = useCallback((e: React.MouseEvent) => {
-    e.preventDefault()
-    setCurrentPhotoIndex((prev) => {
-      const nextIndex = (prev - 1 + uploadedPhotos.length) % uploadedPhotos.length
-      setUploadedPhotos(photos => 
-        photos.map((photo, index) => 
-          index === nextIndex ? { ...photo, visited: true } : photo
-        )
-      )
-      if (uploadedPhotos[nextIndex].coordinates) {
-        setMapCenter([uploadedPhotos[nextIndex].coordinates[1], uploadedPhotos[nextIndex].coordinates[0]])
-        setLocationSearch(uploadedPhotos[nextIndex].location || '')
-        setIsLocationAutofilled(!!uploadedPhotos[nextIndex].location)
-        findNearbyPandals(uploadedPhotos[nextIndex].coordinates[0], uploadedPhotos[nextIndex].coordinates[1])
-      } else {
-        setLocationSearch('')
-        setIsLocationAutofilled(false)
-        setNearbyPandals([])
-      }
-      return nextIndex
-    })
-  }, [uploadedPhotos])
-
   const handleUserDataSubmit = useCallback(() => {
     if (isUserDataValid()) {
       const newUserData: UserData = { username: tempUsername }
       if (tempEmail) {
         newUserData.email = tempEmail
       }
+      if (tempRedditUsername) {
+        newUserData.redditUsername = tempRedditUsername
+      }
       setUserData(newUserData)
       localStorage.setItem('userData', JSON.stringify(newUserData))
       setIsUserDataModalOpen(false)
-      setIsSubmitting(false)
+      handleSubmitPhoto(newUserData)
     }
   }, [tempUsername, tempEmail])
 
   const isUserDataValid = () => {
     return (
       tempUsername.length > 0 &&
-      tempUsername.length <= 15 &&
-      /^[a-zA-Z0-9_]+$/.test(tempUsername) &&
-      (tempEmail === '' || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(tempEmail))
+      tempUsername.length <= 20 &&
+      /^[a-zA-Z0-9_\s]+$/.test(tempUsername) &&
+      (tempEmail === '' || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(tempEmail)) &&
+      (tempRedditUsername === '' || /^u\/[a-zA-Z0-9_]+$/.test(tempRedditUsername))
     )
   }
 
   const handleLocationSearch = useCallback(async (query: string) => {
     setLocationSearch(query)
-    setIsLocationAutofilled(false)
+    setSelectedPandal(null)
     if (query.length > 0) {
       try {
         const results = await index.search(query, { limit: 5 })
         setLocationResults(results.hits.map((hit: any) => ({
-          id: hit.id,
+          uid: hit.uid,
           name: hit.name,
           coordinates: [hit._geo.lat, hit._geo.lng],
           address: hit.address,
         })))
+        setShowNewPandalBanner(results.hits.length === 0)
       } catch (error) {
         console.error('Error searching for locations:', error)
       }
     } else {
       setLocationResults([])
+      setShowNewPandalBanner(false)
     }
   }, [])
 
   const handleLocationSelect = useCallback((location: PandalInfo) => {
-    setLocationSearch(location.name)
-    setMapCenter([location.coordinates[1], location.coordinates[0]])
-    setLocationResults([])
-    setSelectedPandal(location)
-    setIsLocationAutofilled(false)
-    findNearbyPandals(location.coordinates[0], location.coordinates[1])
-  }, [])
+    if (uploadedPhoto?.coordinates) {
+      const distance = calculateDistance(uploadedPhoto.coordinates, location.coordinates)
+      if (distance > 0.5) { // If distance is greater than 500 meters
+        setPendingPandal(location)
+        setIsLocationConfirmDialogOpen(true)
+      } else {
+        confirmLocationSelect(location)
+      }
+    } else {
+      confirmLocationSelect(location)
+    }
+  }, [uploadedPhoto])
 
-  const isFormValid = () => {
-    return uploadedPhotos.length > 0 && locationSearch.trim() !== '' && title.trim() !== ''
+  const confirmLocationSelect = (location: PandalInfo) => {
+    setLocationSearch(location.name)
+    setSelectedPandal(location)
+    setMapCenter([location.coordinates[1], location.coordinates[0]])
+    setMapZoom(15)
+    setLocationResults([])
+    setIsLocationConfirmDialogOpen(false)
+    setPendingPandal(null)
+    setShowNewPandalBanner(false)
+    updateMapMarker()
   }
 
-  const getPendingActions = () => {
-    const actions = []
-    if (uploadedPhotos.length === 0) actions.push('Upload at least one photo')
-    if (locationSearch.trim() === '') actions.push('Select a location')
-    if (title.trim() === '') actions.push('Add a title')
-    return actions
+  const calculateDistance = (coord1: [number, number], coord2: [number, number]): number => {
+    const R = 6371 // Radius of the Earth in km
+    const dLat = (coord2[0] - coord1[0]) * Math.PI / 180
+    const dLon = (coord2[1] - coord1[1]) * Math.PI / 180
+    const a = 
+      Math.sin(dLat/2) * Math.sin(dLat/2) +
+      Math.cos(coord1[0] * Math.PI / 180) * Math.cos(coord2[0] * Math.PI / 180) * 
+      Math.sin(dLon/2) * Math.sin(dLon/2)
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a))
+    return R * c
+  }
+
+  const isFormValid = () => {
+    return uploadedPhoto !== null && locationSearch.trim() !== ''
   }
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -392,238 +327,312 @@ export default function PujoPictures() {
     if (isFormValid()) {
       if (!userData) {
         setIsUserDataModalOpen(true)
-        setIsSubmitting(true)
       } else {
-        // Proceed with form submission
-        console.log('Form submitted')
+        handleSubmitPhoto(userData)
       }
     }
   }
 
-  const handleConfirmLocation = () => {
-    if (pendingPandal) {
-      handleLocationSelect(pendingPandal)
+  const handleSubmitPhoto = async (user: UserData) => {
+    setIsSubmitting(true)
+    try {
+      const formData = new FormData()
+      formData.append('username', user.username)
+      if (user.email) formData.append('email', user.email)
+      if (user.redditUsername) formData.append('redditUsername', user.redditUsername)
+      if (uploadedPhoto) {
+        formData.append('photo', uploadedPhoto.file)
+        formData.append('location', locationSearch)
+        formData.append('pandalId', selectedPandal?.uid || 'new_pandal')
+        formData.append('pandalName', selectedPandal?.name || locationSearch)
+        if (uploadedPhoto.coordinates) {
+          formData.append('coordinates', JSON.stringify(uploadedPhoto.coordinates))
+        } else if(selectedPandal) {
+          formData.append('coordinates', JSON.stringify(selectedPandal.coordinates))
+        } 
+        formData.append('imageType', imageType)
+      }
+
+      const response = await fetch('/api/submit', {
+        method: 'POST',
+        body: formData,
+      })
+
+      if (response.ok) {
+        const result = await response.json()
+        setSubmissionId(result.submissionId)
+        setIsSubmissionSuccessDialogOpen(true)
+        // Reset form
+        setUploadedPhoto(null)
+        setLocationSearch('')
+        setSelectedPandal(null)
+        setMapCenter(DEFAULT_CENTER)
+        setMapZoom(DEFAULT_ZOOM)
+        setImageType('pandal')
+        setAutoFilledLocation(null)
+      } 
+       else {
+        throw new Error('Submission failed')
+      }
+    } catch (error) {
+      console.error('Error submitting photo:', error)
+      toast({
+        title: "Error",
+        description: "There was a problem submitting your photo. Please try again.",
+        variant: "destructive",
+      })
+    } finally {
+      setIsSubmitting(false)
     }
-    setIsLocationConfirmDialogOpen(false)
-    setPendingPandal(null)
+  }
+
+  const handleLocationInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const newValue = e.target.value
+    handleLocationSearch(newValue)
+  }
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+    }
+  }
+
+  const handleClickOutside = (event: MouseEvent) => {
+    if (locationInputRef.current && !locationInputRef.current.contains(event.target as Node)) {
+      setLocationResults([])
+      if (locationSearch && !selectedPandal) {
+        setIsNoLocationSelectedDialogOpen(true)
+      }
+    }
+  }
+
+  const handleAutoFilledLocationClick = () => {
+    if (autoFilledLocation) {
+      setLocationSearch(autoFilledLocation.name)
+      setSelectedPandal(autoFilledLocation)
+      setMapCenter([autoFilledLocation.coordinates[1], autoFilledLocation.coordinates[0]])
+      setMapZoom(15)
+      updateMapMarker()
+    }
+  }
+
+  const handleNoLocationSelected = () => {
+    setIsNoLocationSelectedDialogOpen(false)
+    setShowNewPandalBanner(true)
+    setSelectedPandal(null)
+    setMapCenter(DEFAULT_CENTER)
+    setMapZoom(DEFAULT_ZOOM)
+    if (markerRef.current) {
+      markerRef.current.remove()
+    }
   }
 
   return (
     <div className="min-h-screen bg-orange-50 p-4 md:p-8 flex items-center justify-center">
-      <div className={`max-w-6xl w-full bg-white rounded-lg shadow-xl`}>
-        <div className={`flex flex-col md:flex-row ${uploadedPhotos.length === 0 ? 'items-center justify-center' : ''}`}>
-          <div className={`md:w-1/2 p-4 md:p-8 ${uploadedPhotos.length === 0 ? 'w-full max-w-2xl' : ''}`}>
-            <h1 className="text-3xl md:text-4xl font-bold text-orange-600 mb-4">Pujo Pictures</h1>
-            {userData && <p className="text-lg text-gray-600 mb-4">Welcome, @{userData.username}!</p>}
-            <p className="mb-6 text-gray-600">
-              Capture the vibrant spirit of Durga Pujo! Share your moments and help others experience the festival's magic through your lens.
-            </p>
-            <div className="mb-6">
-              <h2 className="text-xl font-semibold text-orange-600 mb-2">What makes a great Pujo picture?</h2>
-              <ul className="list-disc list-inside text-gray-600 space-y-2">
-                <li>Vivid colors of decorations and attire</li>
-                <li>Emotional moments of devotion and celebration</li>
-                <li>Intricate details of idols and pandals</li>
-                <li>The energy of cultural performances</li>
-                <li>Candid shots capturing the festival's atmosphere</li>
-              </ul>
-            </div>
-            <div
-              className={`border-2 border-dashed rounded-lg p-4 md:p-8 text-center transition-all duration-300 ${
-                dragActive ? 'border-orange-500 bg-orange-50 scale-105' : 'border-orange-300 hover:border-orange-400 hover:bg-orange-50'
-              }`}
-              onDragEnter={handleDrag}
-              onDragLeave={handleDrag}
-              onDragOver={handleDrag}
-              onDrop={handleDrop}
-            >
-              <div className="mb-4 font-semibold text-gray-700">Drag & Drop or Click to Upload</div>
-              <div className="flex items-center justify-center mb-4">
-                <Camera className="w-12 h-12 md:w-16 md:h-16 text-orange-500" />
-              </div>
-              <Button className="bg-orange-500 hover:bg-orange-600 transition-colors duration-300" onClick={() => document.getElementById('fileInput')?.click()}>
-                Choose Photos
-              </Button>
-              <input
-                type="file"
-                id="fileInput"
-                multiple
-                className="hidden"
-                onChange={handleFileInput}
-                accept="image/*"
-              />
-              <p className="mt-4 text-sm text-gray-500">Accepted formats: JPG, PNG, GIF (Max 6 MB each)</p>
-            </div>
-            {uploadedPhotos.length > 0 && (
-              <div className="mt-8 overflow-hidden">
-                <h3 className="text-lg font-semibold text-orange-800 mb-4">Your Pujo Gallery</h3>
-                <div className="flex overflow-x-auto space-x-4 pb-4 -mx-4 px-4">
-                  {uploadedPhotos.map((photo, index) => (
-                    <Card 
-                      key={photo.id} 
-                      className={`flex-shrink-0 cursor-pointer transition-all duration-300 ${
-                        index === currentPhotoIndex ? 'ring-2 ring-orange-500 scale-105' : ''
-                      } ${photo.visited ? 'opacity-50' : ''}`}
-                      onClick={() => setCurrentPhotoIndex(index)}
-                    >
-                      <CardContent className="p-1">
-                        <img 
-                          src={photo.preview} 
-                          alt={`Uploaded photo ${index + 1}`} 
-                          className="w-20 h-20 md:w-24 md:h-24 object-cover rounded"
-                        />
-                      </CardContent>
-                    </Card>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-          {uploadedPhotos.length > 0 && (
-            <div className="md:w-1/2 bg-orange-100 p-4 md:p-8 relative" ref={formRef}>
-              <div className="hidden md:block absolute top-4 right-4 w-20 h-20 md:w-32 md:h-32 rounded-lg overflow-hidden shadow-lg">
-                <img 
-                  src={uploadedPhotos[currentPhotoIndex].preview} 
-                  alt="Current photo" 
-                  className="w-full h-full object-cover"
-                />
-              </div>
-              <h2 className="text-xl md:text-2xl font-bold text-orange-600 mb-6">Tell Us About Your Pujo Moment</h2>
-              <form className="space-y-4" onSubmit={handleSubmit}>
-                <div>
-                  <label htmlFor="title" className="block text-sm font-medium text-gray-700">
-                    Photo Title <span className="text-red-500">*</span>
-                  </label>
-                  <Input 
-                    type="text" 
-                    id="title" 
-                    name="title" 
-                    className="mt-1" 
-                    placeholder="e.g., 'Dhunuchi Dance at Sunset'" 
-                    value={title}
-                    onChange={(e) => setTitle(e.target.value)}
-                    required
-                  />
-                </div>
-                <div>
-                  <div className="flex items-center">
-                    <label htmlFor="location" className="block text-sm font-medium text-gray-700">
-                      Location <span className="text-red-500">*</span>
-                    </label>
-                    {isLocationAutofilled && (
-                      <Badge variant="secondary" className="ml-2 bg-amber-100 text-amber-800">
-                        Autofilled location
-                      </Badge>
-                    )}
-                  </div>
-                  <div className="mt-1 relative">
-                    <Input
-                      type="text"
-                      id="location"
-                      name="location"
-                      className={`pr-10 ${isLocationAutofilled ? 'bg-amber-50' : ''}`}
-                      placeholder="e.g., 'Kolkata, West Bengal'"
-                      value={locationSearch}
-                      onChange={(e) => handleLocationSearch(e.target.value)}
-                      required
-                    />
-                    <MapPin className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
-                  </div>
-                  {selectedPandal && (
-                    <p className="mt-1 text-sm text-gray-500">{selectedPandal.address}</p>
-                  )}
-                  {locationResults.length > 0 && (
-                    <ul className="mt-2 bg-white border border-gray-300 rounded-md shadow-sm absolute z-50 w-full max-w-md">
-                      {locationResults.map((result) => (
-                        <li
-                          key={result.id}
-                          className={`px-4 py-2 hover:bg-gray-100 cursor-pointer ${
-                            autofilledPandal && result.id === autofilledPandal.id ? 'bg-amber-100' : ''
-                          }`}
-                          onClick={() => handleLocationSelect(result)}
-                        >
-                          {result.name}
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Map</label>
-                  <div className="w-full h-48 rounded-lg overflow-hidden" ref={mapContainerRef}></div>
-                </div>
-                {uploadedPhotos.length > 1 && (
-                  <div className="flex justify-between items-center">
-                    <Button onClick={prevPhoto} variant="outline" className="p-2">
-                      <ChevronLeft className="h-6 w-6" />
-                    </Button>
-                    <span className="text-sm text-gray-500">
-                      Photo {currentPhotoIndex + 1} of {uploadedPhotos.length}
-                    </span>
-                    <Button onClick={nextPhoto} variant="outline" className="p-2">
-                      <ChevronRight className="h-6 w-6" />
-                    </Button>
-                  </div>
-                )}
-                <TooltipProvider>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <div>
-                        <Button 
-                          type="submit" 
-                          className="w-full bg-orange-500 hover:bg-orange-600 transition-colors duration-300"
-                          disabled={!isFormValid()}
-                        >
-                          Share Your Pujo Moment
-                        </Button>
-                      </div>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      <ul className="list-disc pl-4">
-                        {getPendingActions().map((action, index) => (
-                          <li key={index}>{action}</li>
-                        ))}
-                      </ul>
-                    </TooltipContent>
-                  </Tooltip>
-                </TooltipProvider>
-                {!isFormValid() && (
-                  <p className="text-sm text-red-500 flex items-center">
-                    <AlertCircle className="w-4 h-4 mr-2" />
-                    Please fill in all required fields
-                  </p>
-                )}
-              </form>
-            </div>
-          )}
+      <div className="max-w-4xl w-full bg-white rounded-lg shadow-xl p-6 md:p-8">
+        <h1 className="text-3xl md:text-4xl font-bold text-orange-600 mb-4">Pujo Pictures</h1>
+        {userData && <p className="text-lg text-gray-600 mb-4">Welcome, @{userData.username}!</p>}
+        <p className="mb-6 text-gray-600">
+          Capture the vibrant spirit of Durga Pujo! Share your moments and help others experience the festival's magic through your lens.
+        </p>
+        <div className="mb-6">
+          <h2 className="text-xl font-semibold text-orange-600 mb-2">What makes a great Pujo picture?</h2>
+          <ul className="space-y-2">
+            <li className="flex items-center">
+              <Check className="text-green-500 mr-2" />
+              <span>Vivid colors of decorations and attire</span>
+            </li>
+            <li className="flex items-center">
+              <Check className="text-green-500 mr-2" />
+              <span>Emotional moments of devotion and celebration</span>
+            </li>
+            <li className="flex items-center">
+              <Check className="text-green-500 mr-2" />
+              <span>Intricate details of idols and pandals</span>
+            </li>
+            <li className="flex items-center">
+              <Check className="text-green-500 mr-2" />
+              <span>The energy of cultural performances</span>
+            </li>
+            <li className="flex items-center">
+              <Check className="text-green-500 mr-2" />
+              <span>Candid shots capturing the festival's atmosphere</span>
+            </li>
+            <li className="flex items-center">
+              <X className="text-red-500 mr-2" />
+              <span>Blurry or out-of-focus images</span>
+            </li>
+            <li className="flex items-center">
+              <X className="text-red-500 mr-2" />
+              <span>Photos with inappropriate content</span>
+            </li>
+          </ul>
         </div>
+        {!uploadedPhoto && (
+          <div
+            className={`border-2 border-dashed rounded-lg p-4 md:p-8 text-center transition-all duration-300 ${
+              dragActive ? 'border-orange-500 bg-orange-50 scale-105' : 'border-orange-300 hover:border-orange-400 hover:bg-orange-50'
+            }`}
+            onDragEnter={handleDrag}
+            onDragLeave={handleDrag}
+            onDragOver={handleDrag}
+            onDrop={handleDrop}
+          >
+            <div className="mb-4 font-semibold text-gray-700">Drag & Drop or Click to Upload</div>
+            <div className="flex items-center justify-center mb-4">
+              <Camera className="w-12 h-12 md:w-16 md:h-16 text-orange-500" />
+            </div>
+            <Button 
+              className="bg-orange-500 hover:bg-orange-600 transition-colors duration-300" 
+              onClick={() => document.getElementById('fileInput')?.click()}
+            >
+              Choose Photo
+            </Button>
+            <input
+              type="file"
+              id="fileInput"
+              className="hidden"
+              onChange={handleFileInput}
+              accept="image/*"
+            />
+            <p className="mt-4 text-sm text-gray-500">
+              Accepted formats: JPG, PNG, GIF (Max 6 MB)
+            </p>
+          </div>
+        )}
+        {uploadedPhoto && (
+          <form className="mt-8 space-y-4" onSubmit={handleSubmit} onKeyDown={handleKeyDown} ref={formRef}>
+            <div className="mb-4">
+              <img 
+                src={uploadedPhoto.preview} 
+                alt="Uploaded photo" 
+                className="w-full h-48 object-cover rounded-lg"
+              />
+            </div>
+            <div>
+              <label htmlFor="imageType" className="block text-sm font-medium text-gray-700 mb-1">
+                Image Type
+              </label>
+              <Select value={imageType} onValueChange={setImageType}>
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="Select image type" />
+                </SelectTrigger>
+                <SelectContent>
+                  {imageTypes.map((type) => (
+                    <SelectItem key={type.value} value={type.value}>
+                      {type.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <div className="flex items-center">
+                <label htmlFor="location" className="block text-sm font-medium text-gray-700">
+                  Location <span className="text-red-500">*</span>
+                </label>
+                {autoFilledLocation && (
+                  <Badge 
+                    variant="secondary" 
+                    className="ml-2 bg-amber-100 text-amber-800 cursor-pointer hover:bg-amber-200"
+                    onClick={handleAutoFilledLocationClick}
+                  >
+                    Autofilled location
+                  </Badge>
+                )}
+              </div>
+              <div className="mt-1 relative">
+                <Input
+                  type="text"
+                  id="location"
+                  name="location"
+                  className={`pr-10 ${autoFilledLocation ? 'bg-amber-50' : ''}`}
+                  placeholder="e.g., 'Kolkata, West Bengal'"
+                  value={locationSearch}
+                  onChange={handleLocationInputChange}
+                  required
+                  ref={locationInputRef}
+                />
+                <MapPin className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
+              </div>
+              {locationResults.length > 0 && !selectedPandal && (
+                <ul className="mt-2 bg-white border border-gray-300 rounded-md shadow-sm absolute z-50 w-full max-w-md">
+                  {locationResults.map((result) => (
+                    <li
+                      key={result.uid}
+                      className="px-4 py-2 hover:bg-gray-100 cursor-pointer"
+                      onClick={() => handleLocationSelect(result)}
+                    >
+                      {result.name}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {showNewPandalBanner && (
+                <div className="mt-2 text-sm text-gray-600">
+                  No pandals with that name were found. Would you like to 
+                  <a href="https://docs.google.com/forms/d/e/1FAIpQLSeeu2MS6vHALTlNd-6CsMUuYPDdhKSbR1PteVs9KGTfN6pm4w/viewform" target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline ml-1">
+                    add a new pandal to our dataset
+                  </a>?
+                </div>
+              )}
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Map</label>
+              <div className="w-full h-48 rounded-lg overflow-hidden" ref={mapContainerRef}></div>
+            </div>
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <div>
+                    <Button 
+                      type="submit" 
+                      className="w-full bg-orange-500 hover:bg-orange-600 transition-colors duration-300"
+                      disabled={!isFormValid() || isSubmitting}
+                    >
+                      {isSubmitting ? 'Submitting...' : 'Share Your Pujo Moment'}
+                    </Button>
+                  </div>
+                </TooltipTrigger>
+                {!isFormValid() && (
+                  <TooltipContent>
+                    <ul className="list-disc pl-4">
+                      {!uploadedPhoto && <li>Upload a photo</li>}
+                      {locationSearch.trim() === '' && <li>Fill in the location</li>}
+                    </ul>
+                  </TooltipContent>
+                )}
+              </Tooltip>
+            </TooltipProvider>
+          </form>
+        )}
       </div>
       <Dialog open={isUserDataModalOpen} onOpenChange={setIsUserDataModalOpen}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Welcome to Pujo Pictures!</DialogTitle>
             <DialogDescription>
-              Please enter your username to get started. Your username will be mentioned with your pictures when possible.
+              Please enter your nickname to get started. Your nickname will be mentioned with your pictures when possible.
             </DialogDescription>
           </DialogHeader>
           <div className="py-4 space-y-4">
             <div>
-              <label htmlFor="username" className="block text-sm font-medium text-gray-700">Username <span className="text-red-500">*</span></label>
+              <label htmlFor="username" className="block text-sm font-medium text-gray-700">Nickname <span className="text-red-500">*</span></label>
               <Input
                 type="text"
                 id="username"
-                placeholder="@username"
+                placeholder="a Nic Name"
                 value={tempUsername}
                 onChange={(e) => setTempUsername(e.target.value)}
                 required
               />
               {tempUsername.length >= 3 && (
                 <div className="mt-2 text-sm">
-                  <p className={`flex items-center ${/^[a-zA-Z0-9_]+$/.test(tempUsername) ? 'text-green-600' : 'text-red-600'}`}>
+                  <p className={`flex items-center ${/^[a-zA-Z0-9_\s]+$/.test(tempUsername) ? 'text-green-600' : 'text-red-600'}`}>
                     <Check className="mr-2 h-4 w-4" /> No special characters
                   </p>
                   <p className={`flex items-center ${tempUsername.length <= 15 ? 'text-green-600' : 'text-red-600'}`}>
-                    <Check className="mr-2 h-4 w-4" /> Under 15 characters
+                    <Check className="mr-2 h-4 w-4" /> Under 20 characters
                   </p>
                 </div>
               )}
@@ -643,11 +652,46 @@ export default function PujoPictures() {
                 </p>
               )}
             </div>
+            <div>
+              <label htmlFor="redditUsername" className="block text-sm font-medium text-gray-700">Reddit username (Optional)</label>
+              <Input
+                type="text"
+                id="redditUsername"
+                placeholder="u/coolRedditor"
+                value={tempRedditUsername}
+                onChange={(e) => setTempRedditUsername(e.target.value)}
+              />
+              {tempRedditUsername.length > 2 && (
+                <p className={`mt-2 text-sm flex items-center ${/^u\/[a-zA-Z0-9_]+$/.test(tempRedditUsername) ? 'text-green-600' : 'text-red-600'}`}>
+                  <Check className="mr-2 h-4 w-4" /> Valid reddit username starting with 'u/'
+                </p>
+              )}
+            </div>
           </div>
           <DialogFooter>
-            <p className="text-sm text-gray-500 mb-2">You can't change these later on, sorry that you have to make a quick decision (you can try calling our support though, they are usually in a good mood to help)</p>
             <Button onClick={handleUserDataSubmit} disabled={!isUserDataValid()}>
-              Start Sharing
+              Submit
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={isSubmissionSuccessDialogOpen} onOpenChange={setIsSubmissionSuccessDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center justify-center">
+              <Check className="w-6 h-6 text-green-500 mr-2" />
+              Submission Successful!
+            </DialogTitle>
+            <DialogDescription>
+              Your Pujo moment has been submitted for approval. Please save this submission ID for future reference:
+            </DialogDescription>
+          </DialogHeader>
+          <div className="py-4">
+            <p className="text-lg font-semibold text-center bg-gray-100 p-2 rounded">{submissionId}</p>
+          </div>
+          <DialogFooter>
+            <Button onClick={() => setIsSubmissionSuccessDialogOpen(false)}>
+              Close
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -655,14 +699,32 @@ export default function PujoPictures() {
       <Dialog open={isLocationConfirmDialogOpen} onOpenChange={setIsLocationConfirmDialogOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Confirm Location</DialogTitle>
+            <DialogTitle>Confirm Location Change</DialogTitle>
             <DialogDescription>
-              Do you want to set the location to {pendingPandal?.name}?
+              You selected {pendingPandal?.name} which is {uploadedPhoto?.coordinates && pendingPandal?.coordinates ? 
+                calculateDistance(uploadedPhoto.coordinates, pendingPandal.coordinates).toFixed(2) : ''} km 
+              far from the location where the picture was taken. Are you sure you want to use this location?
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button onClick={() => setIsLocationConfirmDialogOpen(false)} variant="outline">Cancel</Button>
-            <Button onClick={handleConfirmLocation}>Confirm</Button>
+            <Button variant="outline" onClick={() => setIsLocationConfirmDialogOpen(false)}>Cancel</Button>
+            <Button onClick={() => confirmLocationSelect(pendingPandal!)}>Confirm</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={isNoLocationSelectedDialogOpen} onOpenChange={setIsNoLocationSelectedDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>No Location Selected</DialogTitle>
+            <DialogDescription>
+              No location was selected from the list. You're adding a picture for a pandal not in our list. Are you sure you want to continue?
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsNoLocationSelectedDialogOpen(false)}>Cancel</Button>
+            <Button onClick={handleNoLocationSelected}>
+              Continue
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
