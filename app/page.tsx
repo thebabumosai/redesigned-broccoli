@@ -21,6 +21,7 @@ import ExifReader from 'exifreader'
 import maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 
+
 interface UploadedPhoto {
   id: number;
   file: File;
@@ -238,6 +239,7 @@ export default function PujoPictures() {
       if (tempEmail) {
         newUserData.email = tempEmail
       }
+      console.log(tempRedditUsername)
       if (tempRedditUsername) {
         newUserData.redditUsername = tempRedditUsername
       }
@@ -246,7 +248,7 @@ export default function PujoPictures() {
       setIsUserDataModalOpen(false)
       handleSubmitPhoto(newUserData)
     }
-  }, [tempUsername, tempEmail])
+  }, [tempUsername, tempEmail, tempRedditUsername])
 
   const isUserDataValid = () => {
     return (
