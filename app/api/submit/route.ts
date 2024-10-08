@@ -14,7 +14,7 @@ import { createCanvas } from 'canvas';
  * @param id - ID to include below the nickname in the watermark.
  * @returns Modified image buffer with the watermark in WebP format.
  */
-export async function addWatermark(imageBuffer: Buffer, nickname: string, id: string): Promise<Buffer> {
+async function addWatermark(imageBuffer: Buffer, nickname: string, id: string): Promise<Buffer> {
     try {
         // Get the metadata of the image to determine dimensions
         const imageMetadata = await sharp(imageBuffer).metadata();
