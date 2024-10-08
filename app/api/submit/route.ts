@@ -6,6 +6,7 @@ import { sign } from 'jsonwebtoken'
 import axios from 'axios';
 import sharp from 'sharp';
 import { createCanvas } from 'canvas';
+const { nanoid } = require('nanoid');
 
 /**
  * Adds a watermark to the bottom-left corner of the image.
@@ -87,7 +88,7 @@ export async function POST(request: NextRequest) {
         const imageType = formData.get('imageType') as string
         const redditUsername = formData.get('redditUsername') as string
 
-        const submissionId = uuidv4()
+        const submissionId = nanoid(16)
         const fileName = `${submissionId}`
 
         //check if file is an image
