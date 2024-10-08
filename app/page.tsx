@@ -45,7 +45,7 @@ interface PandalInfo {
 
 const MEILISEARCH_ENDPOINT = 'https://search.pujo.club'
 const INDEX_UID = 'pujos'
-const API_TOKEN = 'b16fd7743e2b96f99406a7be3d53320e445fb579bbcbadeb41f84fc48836360f'
+const API_TOKEN = process.env.NEXT_PUBLIC_MEILISEARCH_API_KEY
 
 const client = new MeiliSearch({
   host: MEILISEARCH_ENDPOINT,
