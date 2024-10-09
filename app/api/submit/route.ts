@@ -15,7 +15,7 @@ const { nanoid } = require('nanoid');
  * @param id - ID to include below the nickname in the watermark.
  * @returns Modified image buffer with the watermark in WebP format.
  */
-async function addWatermark(imageBuffer: Buffer, nickname: string, id: string): Promise<Buffer> {
+async function addWatermark(imageBuffer: Buffer, nickname: string, id: string, pandalName: string): Promise<Buffer> {
     try {
         // Get the metadata of the image to determine dimensions
         const imageMetadata = await sharp(imageBuffer).metadata();
@@ -37,6 +37,7 @@ async function addWatermark(imageBuffer: Buffer, nickname: string, id: string): 
 
         // Draw the watermark text at the bottom-left corner
         const padding = 20; // Padding from the edges
+        context.fillText(pandalName, padding, padding + fontSize);
         context.fillText("Image Courtesy: "+nickname, padding, height - padding - fontSize);
         context.fillText(id, padding, height - padding);
 
@@ -100,7 +101,7 @@ export async function POST(request: NextRequest) {
             return NextResponse.json({ error: 'File is too large' }, { status: 400 })
         }
 
-        const modifiedImageBuffer = await addWatermark(Buffer.from(await photo.arrayBuffer()), username, `ID: ${submissionId}`);
+        const modifiedImageBuffer = await addWatermark(Buffer.from(await photo.arrayBuffer()), username, `ID: ${submissionId}`, pandalName);
 
         // Upload to S3
         const uploadParams = {
