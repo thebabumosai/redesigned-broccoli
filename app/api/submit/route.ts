@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3'
+import { S3Client, PutObjectCommand, StorageClass } from '@aws-sdk/client-s3'
 import { createClient } from 'redis'
 import { v4 as uuidv4 } from 'uuid'
 import { sign } from 'jsonwebtoken'
@@ -113,6 +113,7 @@ export async function POST(request: NextRequest) {
             ACL: 'public-read',
             //cache for 1 week
             CacheControl: 'max-age=604800',
+            StorageClass: StorageClass.INTELLIGENT_TIERING,
         }
         //@ts-ignore
         await s3Client.send(new PutObjectCommand(uploadParams))
@@ -126,6 +127,7 @@ export async function POST(request: NextRequest) {
             ACL: 'public-read',
             //cache for 1 week
             CacheControl: 'max-age=604800',
+            StorageClass: StorageClass.INTELLIGENT_TIERING,
         }
         //@ts-ignore
         await s3Client.send(new PutObjectCommand(originalUploadParams))
