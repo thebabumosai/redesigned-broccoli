@@ -45,7 +45,7 @@ interface PandalInfo {
 
 const MEILISEARCH_ENDPOINT = 'https://search.pujo.club'
 const INDEX_UID = 'pujos'
-const API_TOKEN = process.env.NEXT_PUBLIC_MEILISEARCH_API_KEY
+const API_TOKEN = process.env.NEXT_PUBLIC_MEILISEARCHKEY
 
 const client = new MeiliSearch({
   host: MEILISEARCH_ENDPOINT,
@@ -166,8 +166,19 @@ export default function PujoPictures() {
 
   const handleFileInput = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
-      handleFile(e.target.files[0])
+    //check if file is an image
+    const file = e.target.files[0]
+    const fileType = file.type
+    if (fileType === "image/jpeg" || fileType === "image/png" || fileType === "image/gif") {
+      handleFile(file)
+    } else {
+      toast({
+        title: "Error",
+        description: "Please upload an image file (JPG, PNG, GIF).",
+        variant: "destructive",
+      })
     }
+  }
   }, [])
 
   const handleFile = useCallback(async (file: File) => {
@@ -190,6 +201,10 @@ export default function PujoPictures() {
     } else if (coordinates) {
       setMapCenter([coordinates[1], coordinates[0]])
       setMapZoom(15)
+    } else {
+      //just zoom out to kolkata
+      setMapCenter(DEFAULT_CENTER)
+      setMapZoom(DEFAULT_ZOOM)
     }
     // Auto scroll to the form
     setTimeout(() => {
@@ -495,7 +510,6 @@ export default function PujoPictures() {
               id="fileInput"
               className="hidden"
               onChange={handleFileInput}
-              accept="image/*"
             />
             <p className="mt-4 text-sm text-gray-500">
               Accepted formats: JPG, PNG, GIF (Max 6 MB)

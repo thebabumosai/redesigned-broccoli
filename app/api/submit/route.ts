@@ -140,7 +140,7 @@ export async function POST(request: NextRequest) {
             coordinates,
             imageType,
             redditUsername,
-            photoUrl: `https://${process.env.S3_BUCKET_NAME}.s3.ap-south-1.amazonaws.com/${fileName}`,
+            photoUrl: `https://${process.env.S3_BUCKET_NAME}/${fileName}`,
             status: 'unapproved',
             discordMessageId: '',
         }
